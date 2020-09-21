@@ -373,6 +373,10 @@ struct stl_hlrec {
 #define SYNSPL_TOP      1       // spell check toplevel text
 #define SYNSPL_NOTOP    2       // don't spell check toplevel text
 
+// values for b_syn_foldlevel: how to compute foldlevel on a line
+#define SYNFLD_START    0       // use level of item at start of line
+#define SYNFLD_MINIMUM  1       // use lowest local minimum level on line
+
 // avoid #ifdefs for when b_spell is not available
 # define B_SPELL(buf)  ((buf)->b_spell)
 
@@ -398,6 +402,7 @@ typedef struct {
   int b_syn_error;                      // TRUE when error occurred in HL
   bool b_syn_slow;                      // true when 'redrawtime' reached
   int b_syn_ic;                         // ignore case for :syn cmds
+  int b_syn_foldlevel;                  // how to compute foldlevel on a line
   int b_syn_spell;                      // SYNSPL_ values
   garray_T b_syn_patterns;              // table for syntax patterns
   garray_T b_syn_clusters;              // table for syntax clusters
@@ -830,17 +835,12 @@ struct file_buffer {
   // tree-sitter) or the corresponding UTF-32/UTF-16 size (like LSP) of the
   // deleted text.
   size_t deleted_bytes;
+  size_t deleted_bytes2;
   size_t deleted_codepoints;
   size_t deleted_codeunits;
 
   // The number for times the current line has been flushed in the memline.
   int flush_count;
-
-  bool b_luahl;
-  LuaRef b_luahl_start;
-  LuaRef b_luahl_window;
-  LuaRef b_luahl_line;
-  LuaRef b_luahl_end;
 
   int b_diff_failed;    // internal diff failed for this buffer
 };

@@ -80,6 +80,7 @@
 #ifdef WIN32
 # include "nvim/os/pty_conpty_win.h"
 #endif
+#include "nvim/lua/executor.h"
 #include "nvim/api/private/helpers.h"
 #include "nvim/os/input.h"
 #include "nvim/os/lang.h"
@@ -314,7 +315,7 @@ static char *(p_icm_values[]) =       { "nosplit", "split", NULL };
 static char *(p_scl_values[]) =       { "yes", "no", "auto", "auto:1", "auto:2",
   "auto:3", "auto:4", "auto:5", "auto:6", "auto:7", "auto:8", "auto:9",
   "yes:1", "yes:2", "yes:3", "yes:4", "yes:5", "yes:6", "yes:7", "yes:8",
-  "yes:9", NULL };
+  "yes:9", "number", NULL };
 static char *(p_fdc_values[]) =       { "auto:1", "auto:2",
   "auto:3", "auto:4", "auto:5", "auto:6", "auto:7", "auto:8", "auto:9",
   "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", NULL };
@@ -346,22 +347,23 @@ static char *strcpy_comma_escaped(char *dest, const char *src, const size_t len)
   return &dest[len + shift];
 }
 
-/// Compute length of a colon-separated value, doubled and with some suffixes
+/// Compute length of a ENV_SEPCHAR-separated value, doubled and with some
+/// suffixes
 ///
-/// @param[in]  val  Colon-separated array value.
+/// @param[in]  val  ENV_SEPCHAR-separated array value.
 /// @param[in]  common_suf_len  Length of the common suffix which is appended to
 ///                             each item in the array, twice.
 /// @param[in]  single_suf_len  Length of the suffix which is appended to each
 ///                             item in the array once.
 ///
-/// @return Length of the comma-separated string array that contains each item
-///         in the original array twice with suffixes with given length
+/// @return Length of the ENV_SEPCHAR-separated string array that contains each
+///         item in the original array twice with suffixes with given length
 ///         (common_suf is present after each new item, single_suf is present
 ///         after half of the new items) and with commas after each item, commas
 ///         inside the values are escaped.
-static inline size_t compute_double_colon_len(const char *const val,
-                                              const size_t common_suf_len,
-                                              const size_t single_suf_len)
+static inline size_t compute_double_env_sep_len(const char *const val,
+                                                const size_t common_suf_len,
+                                                const size_t single_suf_len)
   FUNC_ATTR_WARN_UNUSED_RESULT FUNC_ATTR_PURE
 {
   if (val == NULL || *val == NUL) {
@@ -372,7 +374,7 @@ static inline size_t compute_double_colon_len(const char *const val,
   do {
     size_t dir_len;
     const char *dir;
-    iter = vim_env_iter(':', val, iter, &dir, &dir_len);
+    iter = vim_env_iter(ENV_SEPCHAR, val, iter, &dir, &dir_len);
     if (dir != NULL && dir_len > 0) {
       ret += ((dir_len + memcnt(dir, ',', dir_len) + common_suf_len
                + !after_pathsep(dir, dir + dir_len)) * 2
@@ -384,13 +386,13 @@ static inline size_t compute_double_colon_len(const char *const val,
 
 #define NVIM_SIZE (sizeof("nvim") - 1)
 
-/// Add directories to a comma-separated array from a colon-separated one
+/// Add directories to a ENV_SEPCHAR-separated array from a colon-separated one
 ///
 /// Commas are escaped in process. To each item PATHSEP "nvim" is appended in
 /// addition to suf1 and suf2.
 ///
 /// @param[in,out]  dest  Destination comma-separated array.
-/// @param[in]  val  Source colon-separated array.
+/// @param[in]  val  Source ENV_SEPCHAR-separated array.
 /// @param[in]  suf1  If not NULL, suffix appended to destination. Prior to it
 ///                   directory separator is appended. Suffix must not contain
 ///                   commas.
@@ -403,10 +405,10 @@ static inline size_t compute_double_colon_len(const char *const val,
 ///                      Otherwise in reverse.
 ///
 /// @return (dest + appended_characters_length)
-static inline char *add_colon_dirs(char *dest, const char *const val,
-                                   const char *const suf1, const size_t len1,
-                                   const char *const suf2, const size_t len2,
-                                   const bool forward)
+static inline char *add_env_sep_dirs(char *dest, const char *const val,
+                                     const char *const suf1, const size_t len1,
+                                     const char *const suf2, const size_t len2,
+                                     const bool forward)
   FUNC_ATTR_WARN_UNUSED_RESULT FUNC_ATTR_NONNULL_RET FUNC_ATTR_NONNULL_ARG(1)
 {
   if (val == NULL || *val == NUL) {
@@ -416,8 +418,8 @@ static inline char *add_colon_dirs(char *dest, const char *const val,
   do {
     size_t dir_len;
     const char *dir;
-    iter = (forward ? vim_env_iter : vim_env_iter_rev)(':', val, iter, &dir,
-                                                       &dir_len);
+    iter = (forward ? vim_env_iter : vim_env_iter_rev)(ENV_SEPCHAR, val, iter,
+                                                       &dir, &dir_len);
     if (dir != NULL && dir_len > 0) {
       dest = strcpy_comma_escaped(dest, dir, dir_len);
       if (!after_pathsep(dest - 1, dest)) {
@@ -580,10 +582,11 @@ static void set_runtimepath_default(bool clean_arg)
       rtp_size += libdir_len + memcnt(libdir, ',', libdir_len) + 1;
     }
   }
-  rtp_size += compute_double_colon_len(data_dirs, NVIM_SIZE + 1 + SITE_SIZE + 1,
-                                       AFTER_SIZE + 1);
-  rtp_size += compute_double_colon_len(config_dirs, NVIM_SIZE + 1,
-                                       AFTER_SIZE + 1);
+  rtp_size += compute_double_env_sep_len(data_dirs,
+                                         NVIM_SIZE + 1 + SITE_SIZE + 1,
+                                         AFTER_SIZE + 1);
+  rtp_size += compute_double_env_sep_len(config_dirs, NVIM_SIZE + 1,
+                                         AFTER_SIZE + 1);
   if (rtp_size == 0) {
     return;
   }
@@ -591,20 +594,20 @@ static void set_runtimepath_default(bool clean_arg)
   char *rtp_cur = rtp;
   rtp_cur = add_dir(rtp_cur, config_home, config_len, kXDGConfigHome,
                     NULL, 0, NULL, 0);
-  rtp_cur = add_colon_dirs(rtp_cur, config_dirs, NULL, 0, NULL, 0, true);
+  rtp_cur = add_env_sep_dirs(rtp_cur, config_dirs, NULL, 0, NULL, 0, true);
   rtp_cur = add_dir(rtp_cur, data_home, data_len, kXDGDataHome,
                     "site", SITE_SIZE, NULL, 0);
-  rtp_cur = add_colon_dirs(rtp_cur, data_dirs, "site", SITE_SIZE, NULL, 0,
-                           true);
+  rtp_cur = add_env_sep_dirs(rtp_cur, data_dirs, "site", SITE_SIZE, NULL, 0,
+                             true);
   rtp_cur = add_dir(rtp_cur, vimruntime, vimruntime_len, kXDGNone,
                     NULL, 0, NULL, 0);
   rtp_cur = add_dir(rtp_cur, libdir, libdir_len, kXDGNone, NULL, 0, NULL, 0);
-  rtp_cur = add_colon_dirs(rtp_cur, data_dirs, "site", SITE_SIZE,
-                           "after", AFTER_SIZE, false);
+  rtp_cur = add_env_sep_dirs(rtp_cur, data_dirs, "site", SITE_SIZE,
+                             "after", AFTER_SIZE, false);
   rtp_cur = add_dir(rtp_cur, data_home, data_len, kXDGDataHome,
                     "site", SITE_SIZE, "after", AFTER_SIZE);
-  rtp_cur = add_colon_dirs(rtp_cur, config_dirs, "after", AFTER_SIZE, NULL, 0,
-                           false);
+  rtp_cur = add_env_sep_dirs(rtp_cur, config_dirs, "after", AFTER_SIZE, NULL, 0,
+                             false);
   rtp_cur = add_dir(rtp_cur, config_home, config_len, kXDGConfigHome,
                     "after", AFTER_SIZE, NULL, 0);
   // Strip trailing comma.
@@ -1354,11 +1357,11 @@ int do_set(
       // Disallow changing some options from modelines.
       if (opt_flags & OPT_MODELINE) {
         if (flags & (P_SECURE | P_NO_ML)) {
-          errmsg = (char_u *)_("E520: Not allowed in a modeline");
+          errmsg = (char_u *)N_("E520: Not allowed in a modeline");
           goto skip;
         }
         if ((flags & P_MLE) && !p_mle) {
-          errmsg = (char_u *)_(
+          errmsg = (char_u *)N_(
               "E992: Not allowed in a modeline when 'modelineexpr' is off");
           goto skip;
         }
@@ -1375,7 +1378,7 @@ int do_set(
 
       // Disallow changing some options in the sandbox
       if (sandbox != 0 && (flags & P_SECURE)) {
-        errmsg = (char_u *)_(e_sandbox);
+        errmsg = e_sandbox;
         goto skip;
       }
 
@@ -1711,6 +1714,7 @@ int do_set(
 #ifdef BACKSLASH_IN_FILENAME
                     && !((flags & P_EXPAND)
                          && vim_isfilec(arg[1])
+                         && !ascii_iswhite(arg[1])
                          && (arg[1] != '\\'
                              || (s == newval
                                  && arg[2] != '\\')))
@@ -3183,6 +3187,13 @@ ambw_end:
     if (check_opt_strings(*varp, p_scl_values, false) != OK) {
       errmsg = e_invarg;
     }
+    // When changing the 'signcolumn' to or from 'number', recompute the
+    // width of the number column if 'number' or 'relativenumber' is set.
+    if (((*oldval == 'n' && *(oldval + 1) == 'u')
+         || (*curwin->w_p_scl == 'n' && *(curwin->w_p_scl + 1) =='u'))
+        && (curwin->w_p_nu || curwin->w_p_rnu)) {
+      curwin->w_nrwidth_line_count = 0;
+    }
   } else if (varp == &curwin->w_p_fdc || varp == &curwin->w_allbuf_opt.wo_fdc) {
     // 'foldcolumn'
     if (check_opt_strings(*varp, p_fdc_values, false) != OK) {
@@ -3336,6 +3347,10 @@ ambw_end:
   } else if (varp == &curwin->w_p_winhl) {
     if (!parse_winhl_opt(curwin)) {
       errmsg = e_invarg;
+    }
+  } else if (varp == &p_rtp) {  // 'runtimepath'
+    if (!nlua_update_package_path()) {
+      errmsg = (char_u *)N_("E970: Failed to initialize lua interpreter");
     }
   } else {
     // Options that are a list of flags.
@@ -7397,7 +7412,10 @@ int win_signcol_count(win_T *wp)
   int maximum = 1, needed_signcols;
   const char *scl = (const char *)wp->w_p_scl;
 
-  if (*scl == 'n') {
+  // Note: It checks "no" or "number" in 'signcolumn' option
+  if (*scl == 'n'
+      && (*(scl + 1) == 'o' || (*(scl + 1) == 'u'
+                                && (wp->w_p_nu || wp->w_p_rnu)))) {
     return 0;
   }
   needed_signcols = buf_signcols(wp->w_buffer);

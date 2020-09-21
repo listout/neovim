@@ -7,6 +7,8 @@
 #include <string.h>
 #include <stdbool.h>
 
+#include <lua.h>
+#include <lauxlib.h>
 #include <msgpack.h>
 
 #include "nvim/ascii.h"
@@ -21,6 +23,7 @@
 #include "nvim/ex_cmds.h"
 #include "nvim/ex_cmds2.h"
 #include "nvim/ex_docmd.h"
+#include "nvim/extmark.h"
 #include "nvim/fileio.h"
 #include "nvim/fold.h"
 #include "nvim/getchar.h"
@@ -160,6 +163,7 @@ void early_init(mparm_T *paramp)
   env_init();
   fs_init();
   handle_init();
+  extmark_init();
   eval_init();          // init global variables
   init_path(argv0 ? argv0 : "nvim");
   init_normal_cmds();   // Init the table of Normal mode commands.
@@ -313,6 +317,26 @@ int main(int argc, char **argv)
     input_start(STDIN_FILENO);
   }
 
+  // Wait for UIs to set up Nvim or show early messages
+  // and prompts (--cmd, swapfile dialog, …).
+  bool use_remote_ui = (embedded_mode && !headless_mode);
+  bool use_builtin_ui = (!headless_mode && !embedded_mode && !silent_mode);
+  if (use_remote_ui || use_builtin_ui) {
+    TIME_MSG("waiting for UI");
+    if (use_remote_ui) {
+      remote_ui_wait_for_attach();
+    } else {
+      ui_builtin_start();
+    }
+    TIME_MSG("done waiting for UI");
+
+    // prepare screen now, so external UIs can display messages
+    starting = NO_BUFFERS;
+    screenclear();
+    TIME_MSG("initialized screen early for UI");
+  }
+
+
   // open terminals when opening files that start with term://
 #define PROTO "term://"
   do_cmdline_cmd("augroup nvim_terminal");
@@ -333,25 +357,6 @@ int main(int argc, char **argv)
   // Allows for setting 'loadplugins' there.
   if (params.use_vimrc != NULL && strequal(params.use_vimrc, "NONE")) {
     p_lpl = false;
-  }
-
-  // Wait for UIs to set up Nvim or show early messages
-  // and prompts (--cmd, swapfile dialog, …).
-  bool use_remote_ui = (embedded_mode && !headless_mode);
-  bool use_builtin_ui = (!headless_mode && !embedded_mode && !silent_mode);
-  if (use_remote_ui || use_builtin_ui) {
-    TIME_MSG("waiting for UI");
-    if (use_remote_ui) {
-      remote_ui_wait_for_attach();
-    } else {
-      ui_builtin_start();
-    }
-    TIME_MSG("done waiting for UI");
-
-    // prepare screen now, so external UIs can display messages
-    starting = NO_BUFFERS;
-    screenclear();
-    TIME_MSG("initialized screen early for UI");
   }
 
   // Execute --cmd arguments.

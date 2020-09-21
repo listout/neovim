@@ -7,17 +7,24 @@ local buf = require 'vim.lsp.buf'
 
 local M = {}
 
+-- FIXME: DOC: Expose in vimdocs
+
+--@private
+--- Writes to error buffer.
+--@param ... (table of strings) Will be concatenated before being written
 local function err_message(...)
   api.nvim_err_writeln(table.concat(vim.tbl_flatten{...}))
   api.nvim_command("redraw")
 end
 
+--@see https://microsoft.github.io/language-server-protocol/specifications/specification-current/#workspace_executeCommand
 M['workspace/executeCommand'] = function(err, _)
   if err then
     error("Could not execute code action: "..err.message)
   end
 end
 
+--@see https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocument_codeAction
 M['textDocument/codeAction'] = function(_, _, actions)
   if actions == nil or vim.tbl_isempty(actions) then
     print("No code actions available")
@@ -51,6 +58,7 @@ M['textDocument/codeAction'] = function(_, _, actions)
   end
 end
 
+--@see https://microsoft.github.io/language-server-protocol/specifications/specification-current/#workspace_applyEdit
 M['workspace/applyEdit'] = function(_, _, workspace_edit)
   if not workspace_edit then return end
   -- TODO(ashkan) Do something more with label?
@@ -64,6 +72,7 @@ M['workspace/applyEdit'] = function(_, _, workspace_edit)
   }
 end
 
+--@see https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocument_publishDiagnostics
 M['textDocument/publishDiagnostics'] = function(_, _, result)
   if not result then return end
   local uri = result.uri
@@ -102,6 +111,7 @@ M['textDocument/publishDiagnostics'] = function(_, _, result)
   vim.api.nvim_command("doautocmd User LspDiagnosticsChanged")
 end
 
+--@see https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocument_references
 M['textDocument/references'] = function(_, _, result)
   if not result then return end
   util.set_qflist(util.locations_to_items(result))
@@ -109,6 +119,13 @@ M['textDocument/references'] = function(_, _, result)
   api.nvim_command("wincmd p")
 end
 
+--@private
+--- Prints given list of symbols to the quickfix list.
+--@param _ (not used)
+--@param _ (not used)
+--@param result (list of Symbols) LSP method name
+--@param result (table) result of LSP method; a location or a list of locations.
+---(`textDocument/definition` can return `Location` or `Location[]`
 local symbol_callback = function(_, _, result, _, bufnr)
   if not result or vim.tbl_isempty(result) then return end
 
@@ -116,24 +133,30 @@ local symbol_callback = function(_, _, result, _, bufnr)
   api.nvim_command("copen")
   api.nvim_command("wincmd p")
 end
+--@see https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocument_documentSymbol
 M['textDocument/documentSymbol'] = symbol_callback
+--@see https://microsoft.github.io/language-server-protocol/specifications/specification-current/#workspace_symbol
 M['workspace/symbol'] = symbol_callback
 
+--@see https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocument_rename
 M['textDocument/rename'] = function(_, _, result)
   if not result then return end
   util.apply_workspace_edit(result)
 end
 
+--@see https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocument_rangeFormatting
 M['textDocument/rangeFormatting'] = function(_, _, result)
   if not result then return end
   util.apply_text_edits(result)
 end
 
+--@see https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocument_formatting
 M['textDocument/formatting'] = function(_, _, result)
   if not result then return end
   util.apply_text_edits(result)
 end
 
+--@see https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocument_completion
 M['textDocument/completion'] = function(_, _, result)
   if vim.tbl_isempty(result or {}) then return end
   local row, col = unpack(api.nvim_win_get_cursor(0))
@@ -146,6 +169,7 @@ M['textDocument/completion'] = function(_, _, result)
   vim.fn.complete(textMatch+1, matches)
 end
 
+--@see https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocument_hover
 M['textDocument/hover'] = function(_, method, result)
   util.focusable_float(method, function()
     if not (result and result.contents) then
@@ -166,6 +190,12 @@ M['textDocument/hover'] = function(_, method, result)
   end)
 end
 
+--@private
+--- Jumps to a location. Used as a callback for multiple LSP methods.
+--@param _ (not used)
+--@param method (string) LSP method name
+--@param result (table) result of LSP method; a location or a list of locations.
+---(`textDocument/definition` can return `Location` or `Location[]`
 local function location_callback(_, method, result)
   if result == nil or vim.tbl_isempty(result) then
     local _ = log.info() and log.info(method, 'No location found')
@@ -188,32 +218,76 @@ local function location_callback(_, method, result)
   end
 end
 
+--@see https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocument_declaration
 M['textDocument/declaration'] = location_callback
+--@see https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocument_definition
 M['textDocument/definition'] = location_callback
+--@see https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocument_typeDefinition
 M['textDocument/typeDefinition'] = location_callback
+--@see https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocument_implementation
 M['textDocument/implementation'] = location_callback
 
+--@see https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocument_signatureHelp
 M['textDocument/signatureHelp'] = function(_, method, result)
+  -- When use `autocmd CompleteDone <silent><buffer> lua vim.lsp.buf.signature_help()` to call signatureHelp callback
+  -- If the completion item doesn't have signatures It will make noise. Change to use `print` that can use `<silent>` to ignore
+  if not (result and result.signatures and result.signatures[1]) then
+    print('No signature help available')
+    return
+  end
+  local lines = util.convert_signature_help_to_markdown_lines(result)
+  lines = util.trim_empty_lines(lines)
+  if vim.tbl_isempty(lines) then
+    print('No signature help available')
+    return
+  end
   util.focusable_preview(method, function()
-    if not (result and result.signatures and result.signatures[1]) then
-      return { 'No signature available' }
-    end
-    -- TODO show popup when signatures is empty?
-    local lines = util.convert_signature_help_to_markdown_lines(result)
-    lines = util.trim_empty_lines(lines)
-    if vim.tbl_isempty(lines) then
-      return { 'No signature available' }
-    end
     return lines, util.try_trim_markdown_code_blocks(lines)
   end)
 end
 
+--@see https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocument_documentHighlight
 M['textDocument/documentHighlight'] = function(_, _, result, _)
   if not result then return end
   local bufnr = api.nvim_get_current_buf()
   util.buf_highlight_references(bufnr, result)
 end
 
+--@private
+---
+--- Displays call hierarchy in the quickfix window.
+---
+--@param direction `"from"` for incoming calls and `"to"` for outgoing calls
+--@returns `CallHierarchyIncomingCall[]` if {direction} is `"from"`,
+--@returns `CallHierarchyOutgoingCall[]` if {direction} is `"to"`,
+local make_call_hierarchy_callback = function(direction)
+  return function(_, _, result)
+    if not result then return end
+    local items = {}
+    for _, call_hierarchy_call in pairs(result) do
+      local call_hierarchy_item = call_hierarchy_call[direction]
+      for _, range in pairs(call_hierarchy_call.fromRanges) do
+        table.insert(items, {
+          filename = assert(vim.uri_to_fname(call_hierarchy_item.uri)),
+          text = call_hierarchy_item.name,
+          lnum = range.start.line + 1,
+          col = range.start.character + 1,
+        })
+      end
+    end
+    util.set_qflist(items)
+    api.nvim_command("copen")
+    api.nvim_command("wincmd p")
+  end
+end
+
+--@see https://microsoft.github.io/language-server-protocol/specifications/specification-current/#callHierarchy/incomingCalls
+M['callHierarchy/incomingCalls'] = make_call_hierarchy_callback('from')
+
+--@see https://microsoft.github.io/language-server-protocol/specifications/specification-current/#callHierarchy/outgoingCalls
+M['callHierarchy/outgoingCalls'] = make_call_hierarchy_callback('to')
+
+--@see https://microsoft.github.io/language-server-protocol/specifications/specification-current/#window/logMessage
 M['window/logMessage'] = function(_, _, result, client_id)
   local message_type = result.type
   local message = result.message
@@ -234,6 +308,7 @@ M['window/logMessage'] = function(_, _, result, client_id)
   return result
 end
 
+--@see https://microsoft.github.io/language-server-protocol/specifications/specification-current/#window/showMessage
 M['window/showMessage'] = function(_, _, result, client_id)
   local message_type = result.type
   local message = result.message

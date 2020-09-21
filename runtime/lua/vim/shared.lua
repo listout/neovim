@@ -190,10 +190,10 @@ function vim.tbl_contains(t, value)
   return false
 end
 
--- Returns true if the table is empty, and contains no indexed or keyed values.
---
---@see From https://github.com/premake/premake-core/blob/master/src/base/table.lua
---
+--- Checks if a table is empty.
+---
+--@see https://github.com/premake/premake-core/blob/master/src/base/table.lua
+---
 --@param t Table to check
 function vim.tbl_isempty(t)
   assert(type(t) == 'table', string.format("Expected table, got %s", type(t)))
@@ -347,16 +347,14 @@ function vim.tbl_flatten(t)
   return result
 end
 
--- Determine whether a Lua table can be treated as an array.
---
--- An empty table `{}` will default to being treated as an array.
--- Use `vim.emtpy_dict()` to create a table treated as an
--- empty dict. Empty tables returned by `rpcrequest()` and
--- `vim.fn` functions can be checked using this function
--- whether they represent empty API arrays and vimL lists.
+--- Tests if a Lua table can be treated as an array.
 ---
---@params Table
---@returns true: An array-like table, false: A dict-like or mixed table
+--- Empty table `{}` is assumed to be an array, unless it was created by
+--- |vim.empty_dict()| or returned as a dict-like |API| or Vimscript result,
+--- for example from |rpcrequest()| or |vim.fn|.
+---
+--@param t Table
+--@returns `true` if array-like table, else `false`.
 function vim.tbl_islist(t)
   if type(t) ~= 'table' then
     return false
@@ -392,7 +390,7 @@ end
 --- </pre>
 ---
 --@see https://github.com/Tieske/Penlight/blob/master/lua/pl/tablex.lua
---@param Table
+--@param t Table
 --@returns Number that is the number of the value in table
 function vim.tbl_count(t)
   vim.validate{t={t,'t'}}

@@ -84,6 +84,9 @@ au BufNewFile,BufRead *.gpr			setf ada
 " AHDL
 au BufNewFile,BufRead *.tdf			setf ahdl
 
+" AIDL
+au BufNewFile,BufRead *.aidl			setf aidl
+
 " AMPL
 au BufNewFile,BufRead *.run			setf ampl
 
@@ -177,7 +180,7 @@ au BufNewFile,BufRead *.at			setf m4
 au BufNewFile,BufRead *.ave			setf ave
 
 " Awk
-au BufNewFile,BufRead *.awk			setf awk
+au BufNewFile,BufRead *.awk,*.gawk		setf awk
 
 " B
 au BufNewFile,BufRead *.mch,*.ref,*.imp		setf b
@@ -233,10 +236,10 @@ au BufNewFile,BufRead */etc/blkid.tab,*/etc/blkid.tab.old   setf xml
 au BufNewFile,BufRead *bsd,*.bsdl		setf bsdl
 
 " Bazel (http://bazel.io)
-autocmd BufRead,BufNewFile *.bzl,WORKSPACE,BUILD.bazel 	setf bzl
+autocmd BufRead,BufNewFile *.bzl,*.bazel,WORKSPACE	setf bzl
 if has("fname_case")
   " There is another check for BUILD further below.
-  autocmd BufRead,BufNewFile BUILD		setf bzl
+  autocmd BufRead,BufNewFile *.BUILD,BUILD		setf bzl
 endif
 
 " C or lpc
@@ -538,7 +541,7 @@ au BufNewFile,BufRead *.ecd			setf ecd
 au BufNewFile,BufRead *.e,*.E			call dist#ft#FTe()
 
 " Elinks configuration
-au BufNewFile,BufRead */etc/elinks.conf,*/.elinks/elinks.conf	setf elinks
+au BufNewFile,BufRead elinks.conf		setf elinks
 
 " ERicsson LANGuage; Yaws is erlang too
 au BufNewFile,BufRead *.erl,*.hrl,*.yaws	setf erlang
@@ -1086,6 +1089,9 @@ au BufNewFile,BufRead .netrc			setf netrc
 " Ninja file
 au BufNewFile,BufRead *.ninja			setf ninja
 
+" NPM RC file
+au BufNewFile,BufRead npmrc,.npmrc		setf dosini
+
 " Novell netware batch files
 au BufNewFile,BufRead *.ncf			setf ncf
 
@@ -1130,8 +1136,17 @@ au BufNewFile,BufRead *.ora			setf ora
 " Packet filter conf
 au BufNewFile,BufRead pf.conf			setf pf
 
+" Pacman Config (close enough to dosini)
+au BufNewFile,BufRead */etc/pacman.conf		setf dosini
+
+" Pacman hooks
+au BufNewFile,BufRead *.hook
+	\ if getline(1) == '[Trigger]' |
+	\   setf dosini |
+	\ endif
+
 " Pam conf
-au BufNewFile,BufRead */etc/pam.conf		setf pamconf
+au BufNewFile,BufRead */etc/pam.conf			setf pamconf
 
 " Pam environment
 au BufNewFile,BufRead pam_env.conf,.pam_environment	setf pamenv
@@ -1182,6 +1197,9 @@ au BufNewFile,BufRead *.pod6			setf pod6
 " Also Phtml (was used for PHP 2 in the past)
 " Also .ctp for Cake template file
 au BufNewFile,BufRead *.php,*.php\d,*.phtml,*.ctp	setf php
+
+" PHP config
+au BufNewFile,BufRead php.ini,php.ini-*		setf dosini
 
 " Pike and Cmod
 au BufNewFile,BufRead *.pike,*.pmod		setf pike
@@ -2023,7 +2041,7 @@ au BufNewFile,BufRead bzr_log.*			setf bzr
 
 " Bazel build file
 if !has("fname_case")
-  au BufNewFile,BufRead BUILD			setf bzl
+  au BufNewFile,BufRead *.BUILD,BUILD			setf bzl
 endif
 
 " BIND zone

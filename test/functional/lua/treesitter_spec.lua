@@ -15,14 +15,14 @@ before_each(clear)
 describe('treesitter API', function()
   -- error tests not requiring a parser library
   it('handles missing language', function()
-    eq("Error executing lua: .../treesitter.lua: no parser for 'borklang' language",
-       pcall_err(exec_lua, "parser = vim.treesitter.create_parser(0, 'borklang')"))
+    eq("Error executing lua: .../language.lua: no parser for 'borklang' language, see :help treesitter-parsers",
+       pcall_err(exec_lua, "parser = vim.treesitter.get_parser(0, 'borklang')"))
 
     -- actual message depends on platform
     matches("Error executing lua: Failed to load parser: uv_dlopen: .+",
        pcall_err(exec_lua, "parser = vim.treesitter.require_language('borklang', 'borkbork.so')"))
 
-    eq("Error executing lua: .../treesitter.lua: no parser for 'borklang' language",
+    eq("Error executing lua: .../language.lua: no parser for 'borklang' language, see :help treesitter-parsers",
        pcall_err(exec_lua, "parser = vim.treesitter.inspect_language('borklang')"))
   end)
 
@@ -127,6 +127,58 @@ void ui_refresh(void)
   }
 }]]
 
+  it('allows to iterate over nodes children', function()
+    if not check_parser() then return end
+
+    insert(test_text);
+
+    local res = exec_lua([[
+      parser = vim.treesitter.get_parser(0, "c")
+
+      func_node = parser:parse():root():child(0)
+
+      res = {}
+      for node, field in func_node:iter_children() do
+        table.insert(res, {node:type(), field})
+      end
+      return res
+    ]])
+
+    eq({
+      {"primitive_type", "type"},
+      {"function_declarator", "declarator"},
+      {"compound_statement", "body"}
+    }, res)
+  end)
+
+  it('allows to get a child by field', function()
+    if not check_parser() then return end
+
+    insert(test_text);
+
+    local res = exec_lua([[
+      parser = vim.treesitter.get_parser(0, "c")
+
+      func_node = parser:parse():root():child(0)
+
+      local res = {}
+      for _, node in ipairs(func_node:field("type")) do
+        table.insert(res, {node:type(), node:range()})
+      end
+      return res
+    ]])
+
+    eq({{ "primitive_type", 0, 0, 0, 4 }}, res)
+
+    local res_fail = exec_lua([[
+      parser = vim.treesitter.get_parser(0, "c")
+
+      return #func_node:field("foo") == 0
+    ]])
+
+    assert(res_fail)
+  end)
+
   local query = [[
     ((call_expression function: (identifier) @minfunc (argument_list (identifier) @min_id)) (eq? @minfunc "MIN"))
     "for" @keyword
@@ -198,6 +250,82 @@ void ui_refresh(void)
     }, res)
   end)
 
+  it('allow loading query with escaped quotes and capture them with `lua-match?` and `vim-match?`', function()
+    if not check_parser() then return end
+
+    insert('char* astring = "Hello World!";')
+
+    local res = exec_lua([[
+      cquery = vim.treesitter.parse_query("c", '((_) @quote (vim-match? @quote "^\\"$")) ((_) @quote (lua-match? @quote "^\\"$"))')
+      parser = vim.treesitter.get_parser(0, "c")
+      tree = parser:parse()
+      res = {}
+      for pattern, match in cquery:iter_matches(tree:root(), 0, 0, 1) do
+        -- can't transmit node over RPC. just check the name and range
+        local mrepr = {}
+        for cid,node in pairs(match) do
+          table.insert(mrepr, {cquery.captures[cid], node:type(), node:range()})
+        end
+        table.insert(res, {pattern, mrepr})
+      end
+      return res
+    ]])
+
+    eq({
+      { 1, { { "quote", '"', 0, 16, 0, 17 } } },
+      { 2, { { "quote", '"', 0, 16, 0, 17 } } },
+      { 1, { { "quote", '"', 0, 29, 0, 30 } } },
+      { 2, { { "quote", '"', 0, 29, 0, 30 } } },
+    }, res)
+  end)
+
+  it('allows to add predicates', function()
+    insert([[
+    int main(void) {
+      return 0;
+    }
+    ]])
+
+    local custom_query = "((identifier) @main (#is-main? @main))"
+
+    local res = exec_lua([[
+    local query = require"vim.treesitter.query"
+
+    local function is_main(match, pattern, bufnr, predicate)
+      local node = match[ predicate[2] ]
+
+      return query.get_node_text(node, bufnr)
+    end
+
+    local parser = vim.treesitter.get_parser(0, "c")
+
+    query.add_predicate("is-main?", is_main)
+
+    local query = query.parse_query("c", ...)
+
+    local nodes = {}
+    for _, node in query:iter_captures(parser:parse():root(), 0, 0, 19) do
+      table.insert(nodes, {node:range()})
+    end
+
+    return nodes
+    ]], custom_query)
+
+    eq({{0, 4, 0, 8}}, res)
+
+    local res_list = exec_lua[[
+    local query = require'vim.treesitter.query'
+
+    local list = query.list_predicates()
+
+    table.sort(list)
+
+    return list
+    ]]
+
+    eq({ 'contains?', 'eq?', 'is-main?', 'lua-match?', 'match?', 'vim-match?' }, res_list)
+  end)
+
   it('supports highlighting', function()
     if not check_parser() then return end
 
@@ -237,18 +365,16 @@ static int nlua_schedule(lua_State *const lstate)
 (number_literal) @number
 (char_literal) @string
 
-; TODO(bfredl): overlapping matches are unreliable,
-; we need a proper priority mechanism
-;(type_identifier) @type
+(type_identifier) @type
 ((type_identifier) @Special (#eq? @Special "LuaRef"))
 
 (primitive_type) @type
 (sized_type_specifier) @type
 
-; defaults to very magic syntax, for best compatibility
-((identifier) @Identifier (#match? @Identifier "^l(u)a_"))
-; still support \M etc prefixes
-((identifier) @Constant (#match? @Constant "\M^\[A-Z_]\+$"))
+; Use lua regexes
+((identifier) @Identifier (#contains? @Identifier "lua_"))
+((identifier) @Constant (#lua-match? @Constant "^[A-Z_]+$"))
+((identifier) @Normal (#vim-match? @Constant "^lstate$"))
 
 ((binary_expression left: (identifier) @WarningMsg.left right: (identifier) @WarningMsg.right) (#eq? @WarningMsg.left @WarningMsg.right))
 
@@ -264,7 +390,7 @@ static int nlua_schedule(lua_State *const lstate)
       [4] = {bold = true, foreground = Screen.colors.Brown},
       [5] = {foreground = Screen.colors.Magenta},
       [6] = {foreground = Screen.colors.Red},
-      [7] = {foreground = Screen.colors.SlateBlue},
+      [7] = {bold = true, foreground = Screen.colors.SlateBlue},
       [8] = {foreground = Screen.colors.Grey100, background = Screen.colors.Red},
       [9] = {foreground = Screen.colors.Magenta, background = Screen.colors.Red},
       [10] = {foreground = Screen.colors.Red, background = Screen.colors.Red},
@@ -294,13 +420,13 @@ static int nlua_schedule(lua_State *const lstate)
     ]]}
 
     exec_lua([[
-      local TSHighlighter = vim.treesitter.TSHighlighter
+      local highlighter = vim.treesitter.highlighter
       local query = ...
-      test_hl = TSHighlighter.new(query, 0, "c")
+      test_hl = highlighter.new(query, 0, "c")
     ]], hl_query)
     screen:expect{grid=[[
       {2:/// Schedule Lua callback on main loop's event queue}             |
-      {3:static} {3:int} nlua_schedule(lua_State *{3:const} lstate)                |
+      {3:static} {3:int} {11:nlua_schedule}({3:lua_State} *{3:const} lstate)                |
       {                                                                |
         {4:if} ({11:lua_type}(lstate, {5:1}) != {5:LUA_TFUNCTION}                       |
             || {6:lstate} != {6:lstate}) {                                     |
@@ -308,12 +434,35 @@ static int nlua_schedule(lua_State *const lstate)
           {4:return} {11:lua_error}(lstate);                                    |
         }                                                              |
                                                                        |
-        {7:LuaRef} cb = nlua_ref(lstate, {5:1});                               |
+        {7:LuaRef} cb = {11:nlua_ref}(lstate, {5:1});                               |
                                                                        |
-        multiqueue_put(main_loop.events, nlua_schedule_event,          |
-                       {5:1}, ({3:void} *)(ptrdiff_t)cb);                      |
+        multiqueue_put(main_loop.events, {11:nlua_schedule_event},          |
+                       {5:1}, ({3:void} *)({3:ptrdiff_t})cb);                      |
         {4:return} {5:0};                                                      |
       ^}                                                                |
+      {1:~                                                                }|
+      {1:~                                                                }|
+                                                                       |
+    ]]}
+
+    feed("5Goc<esc>dd")
+
+    screen:expect{grid=[[
+      {2:/// Schedule Lua callback on main loop's event queue}             |
+      {3:static} {3:int} {11:nlua_schedule}({3:lua_State} *{3:const} lstate)                |
+      {                                                                |
+        {4:if} ({11:lua_type}(lstate, {5:1}) != {5:LUA_TFUNCTION}                       |
+            || {6:lstate} != {6:lstate}) {                                     |
+          {11:^lua_pushliteral}(lstate, {5:"vim.schedule: expected function"});  |
+          {4:return} {11:lua_error}(lstate);                                    |
+        }                                                              |
+                                                                       |
+        {7:LuaRef} cb = {11:nlua_ref}(lstate, {5:1});                               |
+                                                                       |
+        multiqueue_put(main_loop.events, {11:nlua_schedule_event},          |
+                       {5:1}, ({3:void} *)({3:ptrdiff_t})cb);                      |
+        {4:return} {5:0};                                                      |
+      }                                                                |
       {1:~                                                                }|
       {1:~                                                                }|
                                                                        |
@@ -322,7 +471,7 @@ static int nlua_schedule(lua_State *const lstate)
     feed('7Go*/<esc>')
     screen:expect{grid=[[
       {2:/// Schedule Lua callback on main loop's event queue}             |
-      {3:static} {3:int} nlua_schedule(lua_State *{3:const} lstate)                |
+      {3:static} {3:int} {11:nlua_schedule}({3:lua_State} *{3:const} lstate)                |
       {                                                                |
         {4:if} ({11:lua_type}(lstate, {5:1}) != {5:LUA_TFUNCTION}                       |
             || {6:lstate} != {6:lstate}) {                                     |
@@ -331,10 +480,10 @@ static int nlua_schedule(lua_State *const lstate)
       {8:*^/}                                                               |
         }                                                              |
                                                                        |
-        {7:LuaRef} cb = nlua_ref(lstate, {5:1});                               |
+        {7:LuaRef} cb = {11:nlua_ref}(lstate, {5:1});                               |
                                                                        |
-        multiqueue_put(main_loop.events, nlua_schedule_event,          |
-                       {5:1}, ({3:void} *)(ptrdiff_t)cb);                      |
+        multiqueue_put(main_loop.events, {11:nlua_schedule_event},          |
+                       {5:1}, ({3:void} *)({3:ptrdiff_t})cb);                      |
         {4:return} {5:0};                                                      |
       }                                                                |
       {1:~                                                                }|
@@ -344,7 +493,7 @@ static int nlua_schedule(lua_State *const lstate)
     feed('3Go/*<esc>')
     screen:expect{grid=[[
       {2:/// Schedule Lua callback on main loop's event queue}             |
-      {3:static} {3:int} nlua_schedule(lua_State *{3:const} lstate)                |
+      {3:static} {3:int} {11:nlua_schedule}({3:lua_State} *{3:const} lstate)                |
       {                                                                |
       {2:/^*}                                                               |
       {2:  if (lua_type(lstate, 1) != LUA_TFUNCTION}                       |
@@ -354,10 +503,56 @@ static int nlua_schedule(lua_State *const lstate)
       {2:*/}                                                               |
         }                                                              |
                                                                        |
-        {7:LuaRef} cb = nlua_ref(lstate, {5:1});                               |
+        {7:LuaRef} cb = {11:nlua_ref}(lstate, {5:1});                               |
                                                                        |
-        multiqueue_put(main_loop.events, nlua_schedule_event,          |
-                       {5:1}, ({3:void} *)(ptrdiff_t)cb);                      |
+        multiqueue_put(main_loop.events, {11:nlua_schedule_event},          |
+                       {5:1}, ({3:void} *)({3:ptrdiff_t})cb);                      |
+        {4:return} {5:0};                                                      |
+      {8:}}                                                                |
+                                                                       |
+    ]]}
+
+    feed("gg$")
+    feed("~")
+    screen:expect{grid=[[
+      {2:/// Schedule Lua callback on main loop's event queu^E}             |
+      {3:static} {3:int} {11:nlua_schedule}({3:lua_State} *{3:const} lstate)                |
+      {                                                                |
+      {2:/*}                                                               |
+      {2:  if (lua_type(lstate, 1) != LUA_TFUNCTION}                       |
+      {2:      || lstate != lstate) {}                                     |
+      {2:    lua_pushliteral(lstate, "vim.schedule: expected function");}  |
+      {2:    return lua_error(lstate);}                                    |
+      {2:*/}                                                               |
+        }                                                              |
+                                                                       |
+        {7:LuaRef} cb = {11:nlua_ref}(lstate, {5:1});                               |
+                                                                       |
+        multiqueue_put(main_loop.events, {11:nlua_schedule_event},          |
+                       {5:1}, ({3:void} *)({3:ptrdiff_t})cb);                      |
+        {4:return} {5:0};                                                      |
+      {8:}}                                                                |
+                                                                       |
+    ]]}
+
+
+    feed("re")
+    screen:expect{grid=[[
+      {2:/// Schedule Lua callback on main loop's event queu^e}             |
+      {3:static} {3:int} {11:nlua_schedule}({3:lua_State} *{3:const} lstate)                |
+      {                                                                |
+      {2:/*}                                                               |
+      {2:  if (lua_type(lstate, 1) != LUA_TFUNCTION}                       |
+      {2:      || lstate != lstate) {}                                     |
+      {2:    lua_pushliteral(lstate, "vim.schedule: expected function");}  |
+      {2:    return lua_error(lstate);}                                    |
+      {2:*/}                                                               |
+        }                                                              |
+                                                                       |
+        {7:LuaRef} cb = {11:nlua_ref}(lstate, {5:1});                               |
+                                                                       |
+        multiqueue_put(main_loop.events, {11:nlua_schedule_event},          |
+                       {5:1}, ({3:void} *)({3:ptrdiff_t})cb);                      |
         {4:return} {5:0};                                                      |
       {8:}}                                                                |
                                                                        |
@@ -403,5 +598,66 @@ static int nlua_schedule(lua_State *const lstate)
       end
     end
     eq({true,true}, {has_named,has_anonymous})
+  end)
+  it('allows to set simple ranges', function()
+    if not check_parser() then return end
+
+    insert(test_text)
+
+    local res = exec_lua([[
+    parser = vim.treesitter.get_parser(0, "c")
+    return { parser:parse():root():range() }
+    ]])
+
+    eq({0, 0, 19, 0}, res)
+
+    -- The following sets the included ranges for the current parser
+    -- As stated here, this only includes the function (thus the whole buffer, without the last line)
+    local res2 = exec_lua([[
+    local root = parser:parse():root()
+    parser:set_included_ranges({root:child(0)})
+    parser.valid = false
+    return { parser:parse():root():range() }
+    ]])
+
+    eq({0, 0, 18, 1}, res2)
+  end)
+  it("allows to set complex ranges", function()
+    if not check_parser() then return end
+
+    insert(test_text)
+
+
+    local res = exec_lua([[
+    parser = vim.treesitter.get_parser(0, "c")
+    query = vim.treesitter.parse_query("c", "(declaration) @decl")
+
+    local nodes = {}
+    for _, node in query:iter_captures(parser:parse():root(), 0, 0, 19) do
+      table.insert(nodes, node)
+    end
+
+    parser:set_included_ranges(nodes)
+
+    local root = parser:parse():root()
+
+    local res = {}
+    for i=0,(root:named_child_count() - 1) do
+      table.insert(res, { root:named_child(i):range() })
+    end
+    return res
+    ]])
+
+    eq({
+      { 2, 2, 2, 40 },
+      { 3, 3, 3, 32 },
+      { 4, 7, 4, 8 },
+      { 4, 8, 4, 25 },
+      { 8, 2, 8, 6 },
+      { 8, 7, 8, 33 },
+      { 9, 8, 9, 20 },
+      { 10, 4, 10, 5 },
+      { 10, 5, 10, 20 },
+      { 14, 9, 14, 27 } }, res)
   end)
 end)
